@@ -10,6 +10,7 @@ Python module for interacting with HKC's Alarm API, allowing for easy interactio
 - Fetch all inputs.
 - View recent logs.
 - Arm and disarm the alarm in various modes.
+- Configure multiple user codes for the same panel and inspect per-user access.
 
 ## Installation
 
@@ -36,7 +37,7 @@ pip install -r requirements.txt
 ## Example Usage
 
 ```python
-from hkc_alarm import HKCAlarm
+from pyhkc import HKCAlarm
 
 # Initialize the system with your credentials.
 panel_id = [your-panel-id]  # replace with your panel ID
@@ -62,6 +63,34 @@ print("Recent Logs:", logs)
 
 # Disarm the system.
 # alarm_system.disarm()
+```
+
+Single-user initialization remains unchanged. If you have multiple panel users with different permissions, add their codes with `user_codes` and query their effective access separately:
+
+```python
+from pyhkc import HKCAlarm
+
+alarm_system = HKCAlarm(
+    panel_id,
+    panel_password,
+    1111,  # default / active user code
+    user_codes=[2222],
+)
+
+# Use the original methods with the active user code.
+status = alarm_system.get_system_status()
+
+# Or inspect every configured user and their access levels.
+access_summary = alarm_system.get_user_access_summary()
+print(access_summary[1111]["allowedBlocks"])
+print(access_summary[2222]["allowedBlocks"])
+
+# Temporarily act as another configured user.
+alarm_system.set_active_user(2222)
+guest_status = alarm_system.get_system_status()
+
+# You can also override the user per call without switching the active user.
+admin_status = alarm_system.get_system_status(user_code=1111)
 ```
 
 ## Publishing

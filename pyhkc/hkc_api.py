@@ -1,16 +1,19 @@
-import requests
+import logging
 import os
 import uuid
+from typing import Iterable
+
+import requests
 from tabulate import tabulate
-import logging
-from tenacity import retry, wait_exponential, stop_after_attempt
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 class HKCAlarm:
-  def __init__(self, panel_id, panel_password, user_code, base_url="https://hkc.api.securecomm.cloud", log_level=logging.INFO):
+  def __init__(self, panel_id, panel_password, user_code, base_url="https://hkc.api.securecomm.cloud", log_level=logging.INFO, user_codes=None):
     self.base_url = base_url
     self.panel_id = int(panel_id)
     self.panel_password = panel_password
-    self.user_code = int(user_code)
+    self.user_codes = self._normalize_user_codes(user_code, user_codes)
+    self.user_code = self.user_codes[0]
     self.headers = {
       "Host": "hkc.api.securecomm.cloud",
       "accept": "application/json, text/plain, */*",
@@ -27,11 +30,68 @@ class HKCAlarm:
     self.logger.info("Initializing HKCAlarm")
     self._initialize()
 
+  @staticmethod
+  def _coerce_user_code(user_code):
+    return int(user_code)
+
+  @classmethod
+  def _normalize_user_codes(cls, primary_user_code, user_codes=None):
+    normalized_codes = []
+
+    def add_code(candidate):
+      code = cls._coerce_user_code(candidate)
+      if code not in normalized_codes:
+        normalized_codes.append(code)
+
+    add_code(primary_user_code)
+
+    if user_codes is None:
+      return normalized_codes
+
+    if isinstance(user_codes, Iterable) and not isinstance(user_codes, (str, bytes)):
+      for candidate in user_codes:
+        add_code(candidate)
+      return normalized_codes
+
+    add_code(user_codes)
+    return normalized_codes
+
+  def _resolve_user_code(self, user_code=None):
+    if user_code is None:
+      return self.user_code
+    return self._coerce_user_code(user_code)
+
+  @classmethod
+  def _normalize_requested_user_codes(cls, user_codes):
+    if isinstance(user_codes, Iterable) and not isinstance(user_codes, (str, bytes)):
+      return list(dict.fromkeys(cls._coerce_user_code(candidate) for candidate in user_codes))
+    return [cls._coerce_user_code(user_codes)]
+
+  @staticmethod
+  def _block_description(descriptions, block_number):
+    return descriptions.get(f"block{block_number}", f"Block {block_number}")
+
   def _initialize(self):
     # get device id first - required for appv3
     self.device_id = self._get_device_id()
     self.logger.info(f"Obtained device ID: {self.device_id}")
     self.securecomm_address = self.get_system_status().get('secureCommAddress', self.securecomm_address)
+
+  def list_user_codes(self):
+    return list(self.user_codes)
+
+  def add_user(self, user_code):
+    normalized_code = self._coerce_user_code(user_code)
+    if normalized_code not in self.user_codes:
+      self.user_codes.append(normalized_code)
+    return normalized_code
+
+  def set_active_user(self, user_code):
+    normalized_code = self._coerce_user_code(user_code)
+    if normalized_code not in self.user_codes:
+      raise ValueError(f"User code {normalized_code} is not configured on this client")
+    self.user_code = normalized_code
+    return self.user_code
 
   def register_mobile(self, app_version="1.0.2", hardware_id="", description=""):
     data = {
@@ -44,28 +104,64 @@ class HKCAlarm:
     }
     return self._mobile_register(data)
 
-  def get_system_status(self):
+  def get_system_status(self, user_code=None):
+    resolved_user_code = self._resolve_user_code(user_code)
     data = {
       "hardwareId": self.hardware_id,
       "deviceId": self.device_id,
       "devicePassword": self.panel_password,
-      "userCode": str(self.user_code),
+      "userCode": str(resolved_user_code),
       "includeDescriptions": True
     }
     response = self._get_status(data)
+    self.securecomm_address = response.get('secureCommAddress', self.securecomm_address)
     return response
 
-  def arm_partset_a(self):
-    return self._arm_or_disarm(command=1, block=0)
+  def get_users_status(self, user_codes=None):
+    target_user_codes = self._normalize_requested_user_codes(user_codes) if user_codes is not None else self.list_user_codes()
+    return {code: self.get_system_status(user_code=code) for code in target_user_codes}
 
-  def arm_partset_b(self):
-    return self._arm_or_disarm(command=2, block=0)
+  def get_user_access_summary(self, user_codes=None):
+    summaries = {}
+    for code, status in self.get_users_status(user_codes=user_codes).items():
+      descriptions = status.get("descriptions", {})
+      allowed_blocks = []
+      denied_blocks = []
 
-  def arm_fullset(self):
-    return self._arm_or_disarm(command=3, block=0)
+      for block_number, block in enumerate(status.get("blocks", []), start=1):
+        if not block.get("isEnabled"):
+          continue
 
-  def disarm(self):
-    return self._arm_or_disarm(command=0, block=0)
+        block_summary = {
+          "block": block_number,
+          "description": self._block_description(descriptions, block_number),
+          "armState": block.get("armState"),
+        }
+
+        if block.get("userAllowed"):
+          allowed_blocks.append(block_summary)
+        else:
+          denied_blocks.append(block_summary)
+
+      summaries[code] = {
+        "userOptions": status.get("userOptions", {}),
+        "allowedBlocks": allowed_blocks,
+        "deniedBlocks": denied_blocks,
+      }
+
+    return summaries
+
+  def arm_partset_a(self, user_code=None):
+    return self._arm_or_disarm(command=1, block=0, user_code=user_code)
+
+  def arm_partset_b(self, user_code=None):
+    return self._arm_or_disarm(command=2, block=0, user_code=user_code)
+
+  def arm_fullset(self, user_code=None):
+    return self._arm_or_disarm(command=3, block=0, user_code=user_code)
+
+  def disarm(self, user_code=None):
+    return self._arm_or_disarm(command=0, block=0, user_code=user_code)
 
   def fetch_logs(self, num_previous_logs=10):
     latest_event_id = self._get_latest_event_id()
@@ -85,7 +181,8 @@ class HKCAlarm:
         latest_event_id = start_event_id - 1  # Decrement for the next batch
     return logs[:num_previous_logs]  # Return only the desired number of logs
 
-  def get_all_inputs(self):
+  def get_all_inputs(self, user_code=None):
+    resolved_user_code = self._resolve_user_code(user_code)
     all_inputs = []
     more_inputs = True
     first_input = 1
@@ -94,7 +191,7 @@ class HKCAlarm:
       data = {
         "panelId": self.panel_id,
         "panelPassword": self.panel_password,
-        "userCode": self.user_code,
+        "userCode": resolved_user_code,
         "firstInput": first_input,
         "secureCommAddress": self.securecomm_address
       }
@@ -110,8 +207,8 @@ class HKCAlarm:
 
     return all_inputs
 
-  def check_login(self):
-      system_status = self.get_system_status()
+  def check_login(self, user_code=None):
+      system_status = self.get_system_status(user_code=user_code)
       # Check for a successful login
       if 'userOptions' in system_status:
           return True
@@ -153,12 +250,13 @@ class HKCAlarm:
   def _get_status(self, data):
     return self._api_request("POST", f"{self.base_url}/AppV3/Device/Status", data)
 
-  def _arm_or_disarm(self, command, block):
+  def _arm_or_disarm(self, command, block, user_code=None):
+    resolved_user_code = self._resolve_user_code(user_code)
     data = {
       "hardwareId": self.hardware_id,
       "deviceId": self.device_id,
       "devicePassword": self.panel_password,
-      "userCode": str(self.user_code),
+      "userCode": str(resolved_user_code),
       "command": command,
       "block": block,
       "inhibit": False
@@ -178,22 +276,24 @@ class HKCAlarm:
 
   def _get_inputs(self, data):
     first_input = data.get("firstInput", 1)
+    user_code = self._resolve_user_code(data.get("userCode"))
     data = {
       "hardwareId": self.hardware_id,
       "deviceId": self.device_id,
       "devicePassword": self.panel_password,
-      "userCode": str(self.user_code),
+      "userCode": str(user_code),
       "firstInput": first_input
     }
     return self._api_request("POST", f"{self.base_url}/AppV3/Device/Inputs", data)
 
-  def _get_device_id(self):
+  def _get_device_id(self, user_code=None):
     # must call first for appv3
+    resolved_user_code = self._resolve_user_code(user_code)
     data = {
       "hardwareId": self.hardware_id,
       "installationId": self.panel_id,
       "devicePassword": self.panel_password,
-      "userCode": str(self.user_code)
+      "userCode": str(resolved_user_code)
     }
     response = self._api_request("POST", f"{self.base_url}/AppV3/App/GetDeviceId", data)
     return response.get("deviceId")
