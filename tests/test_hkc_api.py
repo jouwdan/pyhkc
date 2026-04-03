@@ -61,6 +61,76 @@ class HKCAlarmTests(unittest.TestCase):
     self.assertEqual(first_payload["userCode"], "2222")
     self.assertEqual(second_payload["userCode"], "1111")
 
+  def test_home_assistant_entity_map_assigns_unique_and_shared_inputs(self):
+    with patch.object(HKCAlarm, "_initialize", fake_initialize):
+      alarm = HKCAlarm(123456, "panel-password", 1111, user_codes=[2222])
+
+    statuses = {
+      1111: {
+        "descriptions": {"block1": "Main House", "block2": "House 2"},
+        "blocks": [
+          {"isEnabled": True, "userAllowed": True, "armState": 0},
+          {"isEnabled": True, "userAllowed": False, "armState": 0},
+        ],
+      },
+      2222: {
+        "descriptions": {"block1": "Main House", "block2": "House 2"},
+        "blocks": [
+          {"isEnabled": True, "userAllowed": False, "armState": 0},
+          {"isEnabled": True, "userAllowed": True, "armState": 0},
+        ],
+      },
+    }
+    inputs = {
+      1111: [
+        {"input": 1, "inputId": 1, "description": "Main Sensor"},
+        {"input": 3, "inputId": 3, "description": "Shared Sensor"},
+      ],
+      2222: [
+        {"input": 2, "inputId": 2, "description": "House 2 Sensor"},
+        {"input": 3, "inputId": 3, "description": "Shared Sensor"},
+      ],
+    }
+
+    with patch.object(alarm, "get_users_status", return_value=statuses), patch.object(alarm, "get_users_inputs", return_value=inputs):
+      entity_map = alarm.get_home_assistant_entity_map()
+
+    blocks = {block["block"]: block for block in entity_map["blocks"]}
+    self.assertEqual(blocks[1]["accessUserCodes"], [1111])
+    self.assertEqual(blocks[2]["accessUserCodes"], [2222])
+    self.assertEqual([item["inputId"] for item in blocks[1]["inputs"]], [1])
+    self.assertEqual([item["inputId"] for item in blocks[2]["inputs"]], [2])
+    self.assertEqual([item["inputId"] for item in entity_map["sharedInputs"]], [3])
+    self.assertEqual(entity_map["ambiguousInputs"], [])
+
+  def test_home_assistant_entity_map_marks_inputs_ambiguous_for_multi_block_user(self):
+    with patch.object(HKCAlarm, "_initialize", fake_initialize):
+      alarm = HKCAlarm(123456, "panel-password", 1111)
+
+    statuses = {
+      1111: {
+        "descriptions": {"block1": "Main House", "block2": "House 2"},
+        "blocks": [
+          {"isEnabled": True, "userAllowed": True, "armState": 0},
+          {"isEnabled": True, "userAllowed": True, "armState": 0},
+        ],
+      },
+    }
+    inputs = {
+      1111: [
+        {"input": 7, "inputId": 7, "description": "Shared By Signature"},
+      ],
+    }
+
+    with patch.object(alarm, "get_users_status", return_value=statuses), patch.object(alarm, "get_users_inputs", return_value=inputs):
+      entity_map = alarm.get_home_assistant_entity_map()
+
+    self.assertEqual(entity_map["sharedInputs"], [])
+    self.assertEqual(entity_map["blocks"][0]["inputs"], [])
+    self.assertEqual(entity_map["blocks"][1]["inputs"], [])
+    self.assertEqual(entity_map["ambiguousInputs"][0]["candidateBlocks"], [1, 2])
+    self.assertEqual(entity_map["ambiguousInputs"][0]["inputId"], 7)
+
 
 if __name__ == "__main__":
   unittest.main()

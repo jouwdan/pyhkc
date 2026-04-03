@@ -85,6 +85,11 @@ access_summary = alarm_system.get_user_access_summary()
 print(access_summary[1111]["allowedBlocks"])
 print(access_summary[2222]["allowedBlocks"])
 
+# Build a Home Assistant-oriented block/entity mapping.
+entity_map = alarm_system.get_home_assistant_entity_map()
+for block in entity_map["blocks"]:
+    print(block["description"], block["accessUserCodes"], len(block["inputs"]))
+
 # Temporarily act as another configured user.
 alarm_system.set_active_user(2222)
 guest_status = alarm_system.get_system_status()
@@ -92,6 +97,12 @@ guest_status = alarm_system.get_system_status()
 # You can also override the user per call without switching the active user.
 admin_status = alarm_system.get_system_status(user_code=1111)
 ```
+
+`get_home_assistant_entity_map()` is conservative:
+
+- it assigns an input to a block only when the set of users who can see that input matches exactly one block's `accessUserCodes`
+- it leaves inputs in `sharedInputs` when every configured user can see them
+- it leaves inputs in `ambiguousInputs` when the upstream API does not provide enough information to place them safely on one block
 
 ## Publishing
 

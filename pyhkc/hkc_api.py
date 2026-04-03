@@ -71,6 +71,40 @@ class HKCAlarm:
   def _block_description(descriptions, block_number):
     return descriptions.get(f"block{block_number}", f"Block {block_number}")
 
+  @staticmethod
+  def _input_key(input_data):
+    return input_data.get("inputId", input_data.get("input"))
+
+  def _build_block_access_map(self, statuses):
+    blocks = {}
+
+    for code, status in statuses.items():
+      descriptions = status.get("descriptions", {})
+      for block_number, block in enumerate(status.get("blocks", []), start=1):
+        if not block.get("isEnabled"):
+          continue
+
+        existing = blocks.setdefault(block_number, {
+          "block": block_number,
+          "description": self._block_description(descriptions, block_number),
+          "isEnabled": True,
+          "armState": block.get("armState"),
+          "accessUserCodes": [],
+        })
+
+        if block.get("userAllowed") and code not in existing["accessUserCodes"]:
+          existing["accessUserCodes"].append(code)
+
+    return {
+      "blocks": [
+        {
+          **block,
+          "accessUserCodes": sorted(block["accessUserCodes"]),
+        }
+        for _, block in sorted(blocks.items())
+      ]
+    }
+
   def _initialize(self):
     # get device id first - required for appv3
     self.device_id = self._get_device_id()
@@ -121,6 +155,14 @@ class HKCAlarm:
     target_user_codes = self._normalize_requested_user_codes(user_codes) if user_codes is not None else self.list_user_codes()
     return {code: self.get_system_status(user_code=code) for code in target_user_codes}
 
+  def get_users_inputs(self, user_codes=None):
+    target_user_codes = self._normalize_requested_user_codes(user_codes) if user_codes is not None else self.list_user_codes()
+    return {code: self.get_all_inputs(user_code=code) for code in target_user_codes}
+
+  def get_block_access_map(self, user_codes=None):
+    statuses = self.get_users_status(user_codes=user_codes)
+    return self._build_block_access_map(statuses)
+
   def get_user_access_summary(self, user_codes=None):
     summaries = {}
     for code, status in self.get_users_status(user_codes=user_codes).items():
@@ -150,6 +192,78 @@ class HKCAlarm:
       }
 
     return summaries
+
+  def get_home_assistant_entity_map(self, user_codes=None):
+    statuses = self.get_users_status(user_codes=user_codes)
+    inputs_by_user = self.get_users_inputs(user_codes=statuses.keys())
+    block_map = self._build_block_access_map(statuses)
+    configured_user_codes = list(statuses.keys())
+    configured_user_set = frozenset(configured_user_codes)
+
+    block_visibility_signatures = {}
+    for block in block_map["blocks"]:
+      signature = frozenset(block["accessUserCodes"])
+      block_visibility_signatures.setdefault(signature, []).append(block["block"])
+
+    user_input_index = {}
+    merged_inputs = {}
+    input_visible_to = {}
+    for code, inputs in inputs_by_user.items():
+      indexed_inputs = {}
+      for input_data in inputs:
+        input_key = self._input_key(input_data)
+        indexed_inputs[input_key] = input_data
+        merged_inputs.setdefault(input_key, input_data)
+        input_visible_to.setdefault(input_key, set()).add(code)
+      user_input_index[code] = indexed_inputs
+
+    block_inputs = {block["block"]: [] for block in block_map["blocks"]}
+    shared_inputs = []
+    ambiguous_inputs = []
+
+    for input_key, input_data in sorted(merged_inputs.items(), key=lambda item: item[0]):
+      visible_user_codes = sorted(input_visible_to.get(input_key, set()))
+      visibility_signature = frozenset(visible_user_codes)
+      candidate_blocks = block_visibility_signatures.get(visibility_signature, [])
+      annotated_input = dict(input_data)
+      annotated_input["visibleUserCodes"] = visible_user_codes
+
+      if len(candidate_blocks) == 1:
+        block_inputs[candidate_blocks[0]].append(annotated_input)
+      elif len(candidate_blocks) > 1:
+        ambiguous_input = dict(annotated_input)
+        ambiguous_input["candidateBlocks"] = candidate_blocks
+        ambiguous_inputs.append(ambiguous_input)
+      elif visibility_signature == configured_user_set:
+        shared_inputs.append(annotated_input)
+      else:
+        ambiguous_input = dict(annotated_input)
+        ambiguous_input["candidateBlocks"] = candidate_blocks
+        ambiguous_inputs.append(ambiguous_input)
+
+    for block in block_map["blocks"]:
+      block["inputs"] = block_inputs[block["block"]]
+
+    return {
+      "panel": {
+        "panelId": self.panel_id,
+        "deviceId": self.device_id,
+      },
+      "users": {
+        code: {
+          "allowedBlocks": [
+            block["block"]
+            for block in block_map["blocks"]
+            if code in block["accessUserCodes"]
+          ],
+          "visibleInputs": sorted(user_input_index[code].keys()),
+        }
+        for code in configured_user_codes
+      },
+      "blocks": block_map["blocks"],
+      "sharedInputs": shared_inputs,
+      "ambiguousInputs": ambiguous_inputs,
+    }
 
   def arm_partset_a(self, user_code=None):
     return self._arm_or_disarm(command=1, block=0, user_code=user_code)
