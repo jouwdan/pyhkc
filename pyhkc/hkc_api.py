@@ -336,13 +336,21 @@ class HKCAlarm:
 
   def get_panel(self):
       # remote keypad
-      data = {
-          "hardwareId": self.hardware_id,
-          "deviceId": self.device_id,
-          "devicePassword": self.panel_password,
-          "keys": ""
-      }
+      data = self._device_request_payload()
+      data["keys"] = ""
       return self._api_request("POST", f"{self.base_url}/AppV3/Device/RemoteKeypad", data)
+
+  def get_device_details(self, user_code=None):
+    data = self._device_request_payload(user_code=user_code)
+    return self._api_request("POST", f"{self.base_url}/AppV3/Device/Details", data)
+
+  def get_outputs(self, user_code=None):
+    data = self._device_request_payload(user_code=user_code)
+    return self._api_request("POST", f"{self.base_url}/AppV3/Device/Outputs", data)
+
+  def get_temporary_user(self, user_code=None):
+    data = self._device_request_payload(user_code=user_code)
+    return self._api_request("POST", f"{self.base_url}/AppV3/Device/GetTemporaryUser", data)
 
   # Private methods for direct API calls
 
@@ -364,41 +372,36 @@ class HKCAlarm:
   def _get_status(self, data):
     return self._api_request("POST", f"{self.base_url}/AppV3/Device/Status", data)
 
-  def _arm_or_disarm(self, command, block, user_code=None):
+  def _device_request_payload(self, user_code=None):
     resolved_user_code = self._resolve_user_code(user_code)
-    data = {
+    return {
       "hardwareId": self.hardware_id,
       "deviceId": self.device_id,
       "devicePassword": self.panel_password,
       "userCode": str(resolved_user_code),
+    }
+
+  def _arm_or_disarm(self, command, block, user_code=None):
+    data = self._device_request_payload(user_code=user_code)
+    data.update({
       "command": command,
       "block": block,
-      "inhibit": False
-    }
+      "inhibit": False,
+    })
     return self._api_request("POST", f"{self.base_url}/AppV3/Device/Arming", data)
 
   def _get_logs(self, data):
     # appv3 format  
     event_id = data.get("panelEventId")
-    request_data = {
-      "hardwareId": self.hardware_id,
-      "deviceId": self.device_id,
-      "devicePassword": self.panel_password,
-      "eventId": event_id
-    }
+    request_data = self._device_request_payload()
+    request_data["eventId"] = event_id
     return self._api_request("POST", f"{self.base_url}/AppV3/Device/Logs", request_data)
 
   def _get_inputs(self, data):
     first_input = data.get("firstInput", 1)
-    user_code = self._resolve_user_code(data.get("userCode"))
-    data = {
-      "hardwareId": self.hardware_id,
-      "deviceId": self.device_id,
-      "devicePassword": self.panel_password,
-      "userCode": str(user_code),
-      "firstInput": first_input
-    }
-    return self._api_request("POST", f"{self.base_url}/AppV3/Device/Inputs", data)
+    request_data = self._device_request_payload(user_code=data.get("userCode"))
+    request_data["firstInput"] = first_input
+    return self._api_request("POST", f"{self.base_url}/AppV3/Device/Inputs", request_data)
 
   def _get_device_id(self, user_code=None):
     # must call first for appv3
@@ -414,11 +417,7 @@ class HKCAlarm:
   
   def _get_latest_event_id(self):
     # get latest event id for logs
-    data = {
-      "hardwareId": self.hardware_id,
-      "deviceId": self.device_id,
-      "devicePassword": self.panel_password
-    }
+    data = self._device_request_payload()
     response = self._api_request("POST", f"{self.base_url}/AppV3/Device/Log", data)
     return response.get("eventId")
 

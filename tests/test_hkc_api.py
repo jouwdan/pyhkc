@@ -61,6 +61,35 @@ class HKCAlarmTests(unittest.TestCase):
     self.assertEqual(first_payload["userCode"], "2222")
     self.assertEqual(second_payload["userCode"], "1111")
 
+  def test_read_only_device_helpers_use_v3_device_auth_payload(self):
+    with patch.object(HKCAlarm, "_initialize", fake_initialize):
+      alarm = HKCAlarm(123456, "panel-password", 1111, user_codes=[2222])
+
+    with patch.object(alarm, "_api_request", side_effect=[{"variant": "SW-10270"}, [], {"subscriptionDaysLeft": 0}]) as mock_api_request:
+      details = alarm.get_device_details()
+      outputs = alarm.get_outputs(user_code=2222)
+      temporary_user = alarm.get_temporary_user()
+
+    self.assertEqual(details["variant"], "SW-10270")
+    self.assertEqual(outputs, [])
+    self.assertEqual(temporary_user["subscriptionDaysLeft"], 0)
+
+    details_call = mock_api_request.call_args_list[0].args
+    outputs_call = mock_api_request.call_args_list[1].args
+    temporary_user_call = mock_api_request.call_args_list[2].args
+
+    self.assertEqual(details_call[1], "https://hkc.api.securecomm.cloud/AppV3/Device/Details")
+    self.assertEqual(details_call[2]["hardwareId"], alarm.hardware_id)
+    self.assertEqual(details_call[2]["deviceId"], "device-id")
+    self.assertEqual(details_call[2]["devicePassword"], "panel-password")
+    self.assertEqual(details_call[2]["userCode"], "1111")
+
+    self.assertEqual(outputs_call[1], "https://hkc.api.securecomm.cloud/AppV3/Device/Outputs")
+    self.assertEqual(outputs_call[2]["userCode"], "2222")
+
+    self.assertEqual(temporary_user_call[1], "https://hkc.api.securecomm.cloud/AppV3/Device/GetTemporaryUser")
+    self.assertEqual(temporary_user_call[2]["userCode"], "1111")
+
   def test_home_assistant_entity_map_assigns_unique_and_shared_inputs(self):
     with patch.object(HKCAlarm, "_initialize", fake_initialize):
       alarm = HKCAlarm(123456, "panel-password", 1111, user_codes=[2222])
