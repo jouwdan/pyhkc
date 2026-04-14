@@ -12,6 +12,7 @@ Python module for interacting with HKC's Alarm API, allowing for easy interactio
 - View recent logs.
 - Arm and disarm the alarm in various modes.
 - Configure multiple user codes for the same panel and inspect per-user access.
+- Reuse a route inventory extracted from the official HKC SecureComm 2 Android app.
 
 ## Installation
 
@@ -115,6 +116,32 @@ The additional read-only helpers are intended for diagnostics and integrations:
 - `get_device_details()` returns panel metadata such as variant, platform, installation name, and site name when the upstream API exposes them
 - `get_outputs()` returns the current device outputs payload, which may be empty on some panels
 - `get_temporary_user()` returns the current temporary-user status for the authenticated panel user
+
+## Extracted app routes
+
+The repository includes a route inventory recovered from the official Android
+app bundle in `HKC SecureComm2_1.0.11.xapk`
+and documented in [docs/extracted_app_routes.md](docs/extracted_app_routes.md).
+
+You can inspect or reuse the recovered routes directly from Python:
+
+```python
+from pyhkc import HKCAlarm, APP_V3_ROUTE_INVENTORY, DISCOVERED_HOSTS
+
+alarm = HKCAlarm(panel_id, panel_password, user_code)
+
+print(APP_V3_ROUTE_INVENTORY["device"])
+print(DISCOVERED_HOSTS)
+
+status = alarm.post_app_v3("status", alarm.build_device_payload())
+feature_set = alarm.post_app_v3(
+    "get_feature_set",
+    alarm.build_installation_payload(),
+)
+```
+
+This gives you a clean way to experiment with routes discovered in the app even
+before a dedicated high-level helper exists in `HKCAlarm`.
 
 ## Publishing
 

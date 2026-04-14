@@ -7,6 +7,8 @@ import requests
 from tabulate import tabulate
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from .routes import APP_V3_ROUTE_ALIASES, APP_V3_ROUTE_INVENTORY, DISCOVERED_HOSTS
+
 class HKCAlarm:
   def __init__(self, panel_id, panel_password, user_code, base_url="https://hkc.api.securecomm.cloud", log_level=logging.INFO, user_codes=None):
     self.base_url = base_url
@@ -137,6 +139,39 @@ class HKCAlarm:
       "soundlist": []
     }
     return self._mobile_register(data)
+
+  @classmethod
+  def discovered_routes(cls):
+    return {
+      group: list(routes)
+      for group, routes in APP_V3_ROUTE_INVENTORY.items()
+    }
+
+  @classmethod
+  def discovered_hosts(cls):
+    return list(DISCOVERED_HOSTS)
+
+  def build_installation_payload(self, user_code=None, **extra):
+    resolved_user_code = self._resolve_user_code(user_code)
+    payload = {
+      "hardwareId": self.hardware_id,
+      "installationId": self.panel_id,
+      "devicePassword": self.panel_password,
+      "userCode": str(resolved_user_code),
+    }
+    payload.update(extra)
+    return payload
+
+  def build_device_payload(self, user_code=None, **extra):
+    payload = self._device_request_payload(user_code=user_code)
+    payload.update(extra)
+    return payload
+
+  def post_app_v3(self, route, payload):
+    normalized_route = APP_V3_ROUTE_ALIASES.get(route, route)
+    if not normalized_route.startswith("AppV3/"):
+      raise ValueError(f"Unknown AppV3 route or alias: {route}")
+    return self._api_request("POST", f"{self.base_url}/{normalized_route}", payload)
 
   def get_system_status(self, user_code=None):
     resolved_user_code = self._resolve_user_code(user_code)
@@ -405,13 +440,7 @@ class HKCAlarm:
 
   def _get_device_id(self, user_code=None):
     # must call first for appv3
-    resolved_user_code = self._resolve_user_code(user_code)
-    data = {
-      "hardwareId": self.hardware_id,
-      "installationId": self.panel_id,
-      "devicePassword": self.panel_password,
-      "userCode": str(resolved_user_code)
-    }
+    data = self.build_installation_payload(user_code=user_code)
     response = self._api_request("POST", f"{self.base_url}/AppV3/App/GetDeviceId", data)
     return response.get("deviceId")
   

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from pyhkc import HKCAlarm
+from pyhkc import APP_V3_ROUTE_INVENTORY, DISCOVERED_HOSTS, HKCAlarm
 
 
 def fake_initialize(self):
@@ -89,6 +89,40 @@ class HKCAlarmTests(unittest.TestCase):
 
     self.assertEqual(temporary_user_call[1], "https://hkc.api.securecomm.cloud/AppV3/Device/GetTemporaryUser")
     self.assertEqual(temporary_user_call[2]["userCode"], "1111")
+
+  def test_route_inventory_and_hosts_are_exposed(self):
+    self.assertIn("AppV3/Device/Status", APP_V3_ROUTE_INVENTORY["device"])
+    self.assertIn("hkc.api.securecomm.cloud", DISCOVERED_HOSTS)
+    self.assertIn("AppV3/Video/CCTV", HKCAlarm.discovered_routes()["video"])
+    self.assertIn("doorbell.securecomm.cloud", HKCAlarm.discovered_hosts())
+
+  def test_public_payload_builders_and_generic_route_post(self):
+    with patch.object(HKCAlarm, "_initialize", fake_initialize):
+      alarm = HKCAlarm(123456, "panel-password", 1111, user_codes=[2222])
+
+    installation_payload = alarm.build_installation_payload(extraFlag=True)
+    device_payload = alarm.build_device_payload(user_code=2222, firstInput=5)
+
+    self.assertEqual(installation_payload["installationId"], 123456)
+    self.assertEqual(installation_payload["userCode"], "1111")
+    self.assertEqual(installation_payload["extraFlag"], True)
+
+    self.assertEqual(device_payload["deviceId"], "device-id")
+    self.assertEqual(device_payload["userCode"], "2222")
+    self.assertEqual(device_payload["firstInput"], 5)
+
+    with patch.object(alarm, "_api_request", return_value={"ok": True}) as mock_api_request:
+      alarm.post_app_v3("status", alarm.build_device_payload())
+      alarm.post_app_v3("AppV3/Device/Details", alarm.build_device_payload())
+
+    self.assertEqual(
+      mock_api_request.call_args_list[0].args[1],
+      "https://hkc.api.securecomm.cloud/AppV3/Device/Status",
+    )
+    self.assertEqual(
+      mock_api_request.call_args_list[1].args[1],
+      "https://hkc.api.securecomm.cloud/AppV3/Device/Details",
+    )
 
   def test_home_assistant_entity_map_assigns_unique_and_shared_inputs(self):
     with patch.object(HKCAlarm, "_initialize", fake_initialize):
