@@ -1,8 +1,89 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from pyhkc import APP_V3_ROUTE_INVENTORY, DISCOVERED_HOSTS, HKCAlarm
 
+
+LIVE_STATUS_RESPONSE = {
+  "userOptions": {
+    "unset": True,
+    "partsetA": True,
+    "partsetB": True,
+    "fullset": True,
+    "outputs": False,
+    "tempUser": False,
+    "virtualRkp": True,
+    "viewVideo": True,
+    "inputList": True,
+  },
+  "blocks": [
+    {
+      "armState": 0,
+      "isEnabled": True,
+      "inAlarm": False,
+      "inFault": False,
+      "userAllowed": False,
+      "inhibit": False,
+    },
+    {
+      "armState": 0,
+      "isEnabled": True,
+      "inAlarm": False,
+      "inFault": False,
+      "userAllowed": True,
+      "inhibit": False,
+    },
+  ],
+  "engineerActive": False,
+  "alarmEventId": 0,
+  "alarmEvents": None,
+  "additionalInfo": "Today at 06:48 by U02 Example User",
+  "descriptions": {
+    "block1": "Main House",
+    "block2": "House 2",
+    "partseta": "Homeset",
+    "partsetb": "Partset B",
+  },
+}
+
+LIVE_DETAILS_RESPONSE = {
+  "type": 6,
+  "variant": 4,
+  "platform": 24,
+  "version": "4.4.0.0",
+  "countryCode": 353,
+  "serialNumber": 101224369,
+  "language": 0,
+  "audiolibVersion": "3.0",
+  "installationName": "Example Site",
+  "siteName": "Example Site",
+}
+
+LIVE_INPUTS_RESPONSE = {
+  "inputs": [
+    {
+      "input": 1,
+      "inputId": 1,
+      "description": "Example Sensor",
+      "inputState": 0,
+      "inputType": 1,
+      "timestamp": "0001-01-01T00:00:00",
+      "actionInhibit": True,
+      "cameraId": 0,
+    },
+  ],
+  "moreInputs": False,
+}
+
+LIVE_REMOTE_KEYPAD_RESPONSE = {
+  "greenLed": 0,
+  "redLed": 1,
+  "amberLed": 1,
+  "cursorOn": False,
+  "cursorIndex": 0,
+  "display": "Example Site",
+  "blink": "0000000000000000",
+}
 
 def fake_initialize(self):
   self.device_id = "device-id"
@@ -14,11 +95,13 @@ class HKCAlarmTests(unittest.TestCase):
     with patch.object(HKCAlarm, "_initialize", fake_initialize):
       alarm = HKCAlarm(123456, "panel-password", 1111)
 
-    with patch.object(alarm, "_get_status", return_value={"userOptions": {"unset": True}}) as mock_get_status:
+    with patch.object(alarm, "post_app_v3", return_value={"userOptions": {"unset": True}}) as mock_post_app_v3:
       status = alarm.get_system_status()
 
     self.assertEqual(status["userOptions"]["unset"], True)
-    self.assertEqual(mock_get_status.call_args.args[0]["userCode"], "1111")
+    self.assertEqual(mock_post_app_v3.call_args.args[0], "status")
+    self.assertEqual(mock_post_app_v3.call_args.args[1]["userCode"], "1111")
+    self.assertEqual(mock_post_app_v3.call_args.args[1]["includeDescriptions"], True)
     self.assertEqual(alarm.list_user_codes(), [1111])
 
   def test_multi_user_summary_reports_per_user_block_access(self):
@@ -36,7 +119,7 @@ class HKCAlarmTests(unittest.TestCase):
         ],
       }
 
-    with patch.object(alarm, "_get_status", side_effect=status_for_user):
+    with patch.object(alarm, "post_app_v3", side_effect=lambda route, payload: status_for_user(payload)):
       summary = alarm.get_user_access_summary()
 
     self.assertEqual(alarm.list_user_codes(), [1111, 2222])
@@ -90,6 +173,37 @@ class HKCAlarmTests(unittest.TestCase):
     self.assertEqual(temporary_user_call[1], "https://hkc.api.securecomm.cloud/AppV3/Device/GetTemporaryUser")
     self.assertEqual(temporary_user_call[2]["userCode"], "1111")
 
+  def test_live_observed_status_and_device_shapes_are_supported(self):
+    with patch.object(HKCAlarm, "_initialize", fake_initialize):
+      alarm = HKCAlarm(123456, "panel-password", 1111)
+
+    with patch.object(
+      alarm,
+      "_api_request",
+      side_effect=[
+        LIVE_STATUS_RESPONSE,
+        LIVE_DETAILS_RESPONSE,
+        [],
+        {"subscriptionDaysLeft": 0},
+        LIVE_INPUTS_RESPONSE,
+        LIVE_REMOTE_KEYPAD_RESPONSE,
+      ],
+    ):
+      status = alarm.get_system_status()
+      details = alarm.get_device_details()
+      outputs = alarm.get_outputs()
+      temporary_user = alarm.get_temporary_user()
+      inputs = alarm.get_all_inputs()
+      keypad = alarm.get_remote_keypad()
+
+    self.assertEqual(sorted(status.keys()), sorted(LIVE_STATUS_RESPONSE.keys()))
+    self.assertEqual(sorted(status["blocks"][0].keys()), ["armState", "inAlarm", "inFault", "inhibit", "isEnabled", "userAllowed"])
+    self.assertEqual(sorted(details.keys()), sorted(LIVE_DETAILS_RESPONSE.keys()))
+    self.assertEqual(outputs, [])
+    self.assertEqual(temporary_user["subscriptionDaysLeft"], 0)
+    self.assertEqual(sorted(inputs[0].keys()), sorted(LIVE_INPUTS_RESPONSE["inputs"][0].keys()))
+    self.assertEqual(sorted(keypad.keys()), sorted(LIVE_REMOTE_KEYPAD_RESPONSE.keys()))
+
   def test_route_inventory_and_hosts_are_exposed(self):
     self.assertIn("AppV3/Device/Status", APP_V3_ROUTE_INVENTORY["device"])
     self.assertIn("hkc.api.securecomm.cloud", DISCOVERED_HOSTS)
@@ -123,6 +237,75 @@ class HKCAlarmTests(unittest.TestCase):
       mock_api_request.call_args_list[1].args[1],
       "https://hkc.api.securecomm.cloud/AppV3/Device/Details",
     )
+
+  def test_request_headers_follow_base_url_and_timeout(self):
+    with patch.object(HKCAlarm, "_initialize", fake_initialize):
+      session = Mock()
+      response = Mock()
+      response.json.return_value = {"ok": True}
+      response.raise_for_status.return_value = None
+      session.request.return_value = response
+      alarm = HKCAlarm(
+        123456,
+        "panel-password",
+        1111,
+        base_url="https://custom.securecomm.example",
+        session=session,
+        request_timeout=22,
+      )
+
+    result = alarm.post_app_v3("status", alarm.build_device_payload())
+
+    self.assertEqual(result["ok"], True)
+    self.assertEqual(session.request.call_args.kwargs["headers"]["Host"], "custom.securecomm.example")
+    self.assertEqual(session.request.call_args.kwargs["timeout"], 22)
+
+  def test_deprecated_aliases_still_work(self):
+    with patch.object(HKCAlarm, "_initialize", fake_initialize):
+      alarm = HKCAlarm(123456, "panel-password", 1111)
+
+    with patch.object(alarm, "post_app_v3", return_value={"display": "Ready"}) as mock_post_app_v3:
+      panel = alarm.get_panel()
+
+    self.assertEqual(panel["display"], "Ready")
+    self.assertEqual(mock_post_app_v3.call_args.args[0], "remote_keypad")
+    self.assertEqual(mock_post_app_v3.call_args.args[1]["keys"], "")
+
+  def test_get_latest_event_id_uses_live_log_window_behavior(self):
+    with patch.object(HKCAlarm, "_initialize", fake_initialize):
+      alarm = HKCAlarm(123456, "panel-password", 1111)
+
+    def get_logs(event_id, user_code=None):
+      if event_id > 126:
+        return []
+      newest_event_id = min(126, event_id + alarm.LOG_WINDOW_SIZE - 1)
+      return [{"eventId": candidate} for candidate in range(newest_event_id, event_id - 1, -1)]
+
+    with patch.object(alarm, "_get_logs", side_effect=get_logs):
+      latest_event_id = alarm._get_latest_event_id()
+
+    self.assertEqual(latest_event_id, 126)
+
+  def test_fetch_logs_pages_descending_live_log_windows(self):
+    with patch.object(HKCAlarm, "_initialize", fake_initialize):
+      alarm = HKCAlarm(123456, "panel-password", 1111)
+
+    requested_event_ids = []
+
+    def get_logs(event_id, user_code=None):
+      requested_event_ids.append(event_id)
+      if event_id > 126:
+        return []
+      newest_event_id = min(126, event_id + alarm.LOG_WINDOW_SIZE - 1)
+      return [{"eventId": candidate} for candidate in range(newest_event_id, event_id - 1, -1)]
+
+    with patch.object(alarm, "_get_latest_event_id", return_value=126), patch.object(alarm, "_get_logs", side_effect=get_logs):
+      logs = alarm.fetch_logs(num_previous_logs=35)
+
+    self.assertEqual(requested_event_ids, [100, 73])
+    self.assertEqual([log["eventId"] for log in logs[:5]], [126, 125, 124, 123, 122])
+    self.assertEqual(logs[-1]["eventId"], 92)
+    self.assertEqual(len(logs), 35)
 
   def test_home_assistant_entity_map_assigns_unique_and_shared_inputs(self):
     with patch.object(HKCAlarm, "_initialize", fake_initialize):

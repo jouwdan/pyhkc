@@ -34,7 +34,7 @@ pip install -r requirements.txt
 ## Dependencies
 
 - `requests==2.31.0`
-- `tabulate==0.9.0`
+- `tenacity==8.3.0`
 
 ## Example Usage
 
@@ -116,6 +116,7 @@ The additional read-only helpers are intended for diagnostics and integrations:
 - `get_device_details()` returns panel metadata such as variant, platform, installation name, and site name when the upstream API exposes them
 - `get_outputs()` returns the current device outputs payload, which may be empty on some panels
 - `get_temporary_user()` returns the current temporary-user status for the authenticated panel user
+- `get_remote_keypad()` returns the current remote-keypad payload; `get_panel()` remains as a deprecated alias
 
 ## Extracted app routes
 
@@ -142,6 +143,11 @@ feature_set = alarm.post_app_v3(
 
 This gives you a clean way to experiment with routes discovered in the app even
 before a dedicated high-level helper exists in `HKCAlarm`.
+
+The client now also accepts:
+
+- `session=` to supply your own `requests.Session`
+- `request_timeout=` to bound request duration cleanly in long-running integrations such as Home Assistant
 
 ## Publishing
 
