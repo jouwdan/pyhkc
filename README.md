@@ -2,7 +2,18 @@
 
 Python module for interacting with HKC's Alarm API, allowing for easy interactions with the alarm system.
 
-**Note**: This uses a private API, which means it is subject to change without notice and can break at any time. Always be cautious and respectful when using private APIs. To mimic the behavior of the app and reduce the chance of being rate-limited or blocked, it is recommended to limit requests to the API to one every 5-10 seconds, especially when fetching logs or inputs, similar to HKC's new v2 App.
+**Note**: This uses a private API, which means it is subject to change without notice and can break at any time. Always be cautious and respectful when using private APIs.
+
+The client is now AppV3-first and several core routes have been validated against the live HKC cloud, but some routes are still only confirmed from the Android app bundle and may need extra app or session context.
+
+To reduce the chance of being rate-limited or blocked, prefer conservative polling:
+
+- `Status`: every 20-30 seconds
+- `Inputs`: every 60-90 seconds
+- `Outputs`: every 60-90 seconds
+- `Logs`: every 120-300 seconds
+
+Avoid overlapping requests, and prefer immediate refreshes after actions over tight polling loops.
 
 ## Features
 
@@ -13,6 +24,7 @@ Python module for interacting with HKC's Alarm API, allowing for easy interactio
 - Arm and disarm the alarm in various modes.
 - Configure multiple user codes for the same panel and inspect per-user access.
 - Reuse a route inventory extracted from the official HKC SecureComm 2 Android app.
+- Reuse generic AppV3 helpers for experimenting with confirmed routes.
 
 ## Installation
 
@@ -60,6 +72,10 @@ print("All Inputs:", inputs)
 logs = alarm_system.fetch_logs()
 print("Recent Logs:", logs)
 
+# Read the current virtual keypad payload.
+keypad = alarm_system.get_remote_keypad()
+print("Keypad:", keypad)
+
 # Arm the system.
 # alarm_system.arm_fullset()
 
@@ -91,6 +107,7 @@ print(access_summary[2222]["allowedBlocks"])
 details = alarm_system.get_device_details()
 outputs = alarm_system.get_outputs()
 temporary_user = alarm_system.get_temporary_user()
+keypad = alarm_system.get_remote_keypad()
 
 # Build a Home Assistant-oriented block/entity mapping.
 entity_map = alarm_system.get_home_assistant_entity_map()
@@ -117,6 +134,7 @@ The additional read-only helpers are intended for diagnostics and integrations:
 - `get_outputs()` returns the current device outputs payload, which may be empty on some panels
 - `get_temporary_user()` returns the current temporary-user status for the authenticated panel user
 - `get_remote_keypad()` returns the current remote-keypad payload; `get_panel()` remains as a deprecated alias
+- `fetch_logs()` uses the confirmed `AppV3/Device/Logs` flow internally and pages descending log windows automatically
 
 ## Extracted app routes
 
@@ -135,19 +153,39 @@ print(APP_V3_ROUTE_INVENTORY["device"])
 print(DISCOVERED_HOSTS)
 
 status = alarm.post_app_v3("status", alarm.build_device_payload())
-feature_set = alarm.post_app_v3(
-    "get_feature_set",
-    alarm.build_installation_payload(),
-)
+details = alarm.post_app_v3("details", alarm.build_device_payload())
 ```
 
 This gives you a clean way to experiment with routes discovered in the app even
 before a dedicated high-level helper exists in `HKCAlarm`.
 
-The client now also accepts:
+The client also accepts:
 
 - `session=` to supply your own `requests.Session`
 - `request_timeout=` to bound request duration cleanly in long-running integrations such as Home Assistant
+
+## Live-verified AppV3 behavior
+
+The following routes have been exercised successfully against the live HKC cloud:
+
+- `AppV3/App/GetDeviceId`
+- `AppV3/Device/Status`
+- `AppV3/Device/Details`
+- `AppV3/Device/Inputs`
+- `AppV3/Device/Outputs`
+- `AppV3/Device/GetTemporaryUser`
+- `AppV3/Device/RemoteKeypad`
+- `AppV3/Device/Logs` with `eventId`
+
+Observed behavior:
+
+- `GetDeviceId` accepts `installationId` as an integer
+- `GetDeviceId` accepts `userCode` as a string
+- `Outputs` can validly return an empty list
+- `GetTemporaryUser` can validly return only `subscriptionDaysLeft`
+- `Logs` returns `400` without `eventId`, so `fetch_logs()` seeds and pages log windows internally
+
+Some discovered routes are still only partially understood. In particular, `AppV3/App/GetFeatureSet` returned `400` with the basic installation-auth payload and likely requires additional app or session context.
 
 ## Publishing
 
